@@ -17,12 +17,12 @@ from bs4 import BeautifulSoup
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 CHECK_INTERVAL_SECONDS = 60  # можно увеличить до 300-600, если хотите реже проверять
-HTML_URL = "https://www.stoloto.ru/top3/archive"  # страница архива Топ-3
+HTML_URL = "https://www.stoloto.ru/top3/result/last"  # страница архива Топ-3
 # ===================================================
 
 # Настройка логирования
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
