@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 import time
 import threading
+import sys
 from telegram import Bot
 from telegram.constants import ParseMode
 import asyncio
@@ -13,27 +14,24 @@ from flask import Flask
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GAME_NAME = "top3"
-CHECK_INTERVAL_SECONDS = 300  # 5 минут для теста, потом замените на 900
+CHECK_INTERVAL_SECONDS = 60  # 1 минута для теста
 API_URL = f"https://www.stoloto.ru/p/api/mobile/api/v34/service/draws/archive?count=1&game={GAME_NAME}"
 # ===============================
 
 last_draw_number = None
-
-# --- Flask для health checks ---
 app = Flask(__name__)
 
 @app.route('/')
 def health():
     return "Bot is running", 200
 
-# --- Функции бота ---
 async def send_telegram_message(text):
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     try:
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, parse_mode=ParseMode.HTML)
-        print(f"✅ Сообщение отправлено: {text}")
+        print("✅ Сообщение отправлено:", text, flush=True)
     except Exception as e:
-        print(f"❌ Ошибка при отправке в Telegram: {e}")
+        print("❌ Ошибка отправки:", e, flush=True)
 
 def fetch_latest_draw():
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -43,56 +41,46 @@ def fetch_latest_draw():
         data = response.json()
         if data and 'draws' in data and len(data['draws']) > 0:
             return data['draws'][0]
-        return None
     except Exception as e:
-        print(f"❌ Ошибка при парсинге: {e}")
-        return None
+        print("❌ Ошибка парсинга:", e, flush=True)
+    return None
 
 def format_numbers_only(draw):
     results = draw.get('results', [])
     if results and 'numbers' in results[0]:
-        winning_numbers = results[0]['numbers']
-        numbers_str = '-'.join(map(str, winning_numbers))
-    else:
-        numbers_str = '?-?-?'
-    return f"🎲{numbers_str}"
+        return f"🎲{'-'.join(map(str, results[0]['numbers']))}"
+    return "🎲?-?-?"
 
 def check_new_draw():
     global last_draw_number
     now = datetime.now().strftime('%H:%M:%S')
-    print(f"[{now}] Проверка...")
+    print(f"[{now}] Проверка...", flush=True)
     latest_draw = fetch_latest_draw()
     if not latest_draw:
-        print("⚠️ Нет данных от API")
+        print("⚠️ Нет данных", flush=True)
         return
     current_number = latest_draw.get('drawNumber')
     if last_draw_number is None:
         last_draw_number = current_number
-        print(f"ℹ️ Бот запущен. Последний тираж: №{last_draw_number} (не отправлен)")
+        print(f"ℹ️ Последний тираж: №{last_draw_number}", flush=True)
     elif current_number > last_draw_number:
-        print(f"🎉 Новый тираж! №{current_number}")
-        short_message = format_numbers_only(latest_draw)
-        asyncio.run(send_telegram_message(short_message))
+        print(f"🎉 Новый тираж! №{current_number}", flush=True)
+        asyncio.run(send_telegram_message(format_numbers_only(latest_draw)))
         last_draw_number = current_number
     else:
-        print("➖ Новых тиражей нет")
+        print("➖ Новых нет", flush=True)
 
-def background_check():
-    """Функция, работающая в фоновом потоке: делает проверки и спит."""
-    print("🚀 Запуск фонового потока с проверками")
-    # Первая проверка сразу
+def background_loop():
+    print("🚀 Фоновый поток запущен", flush=True)
     check_new_draw()
-    # Затем цикл
     while True:
-        print(f"💤 Фоновый поток спит {CHECK_INTERVAL_SECONDS} сек...")
+        print(f"💤 Сон {CHECK_INTERVAL_SECONDS} сек...", flush=True)
         time.sleep(CHECK_INTERVAL_SECONDS)
         check_new_draw()
 
 if __name__ == "__main__":
-    # Запускаем фоновый поток для проверок
-    bg_thread = threading.Thread(target=background_check)
-    bg_thread.daemon = True
-    bg_thread.start()
-    print("✅ Фоновый поток запущен, теперь запускаем Flask в главном потоке")
-    # Запускаем Flask (блокирует главный поток)
+    bg = threading.Thread(target=background_loop)
+    bg.daemon = True
+    bg.start()
+    print("✅ Flask запускается", flush=True)
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
