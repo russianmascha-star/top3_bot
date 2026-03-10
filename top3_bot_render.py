@@ -1,7 +1,6 @@
 import requests
 import json
 from datetime import datetime
-import schedule
 import time
 import threading
 from telegram import Bot
@@ -11,11 +10,13 @@ import os
 from flask import Flask
 from threading import Thread
 
+# ========== НАСТРОЙКИ ==========
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GAME_NAME = "top3"
-CHECK_INTERVAL_MINUTES = 15
+CHECK_INTERVAL_SECONDS = 900  # 15 минут
 API_URL = f"https://www.stoloto.ru/p/api/mobile/api/v34/service/draws/archive?count=1&game={GAME_NAME}"
+# ===============================
 
 last_draw_number = None
 app = Flask(__name__)
@@ -76,24 +77,20 @@ def check_new_draw():
     else:
         print("Новых тиражей нет")
 
-def run_schedule():
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
-
 def main():
-    print("🚀 Бот для мониторинга ТОП-3 запущен (версия для Render)")
-    print(f"Проверка каждые {CHECK_INTERVAL_MINUTES} мин")
+    print("🚀 Бот для мониторинга ТОП-3 запущен (упрощённая версия)")
+    print(f"Проверка каждые {CHECK_INTERVAL_SECONDS//60} мин")
+    # Первая проверка сразу
     check_new_draw()
-    schedule.every(CHECK_INTERVAL_MINUTES).minutes.do(check_new_draw)
-    schedule_thread = threading.Thread(target=run_schedule)
-    schedule_thread.daemon = True
-    schedule_thread.start()
+    # Затем в цикле
+    while True:
+        time.sleep(CHECK_INTERVAL_SECONDS)
+        check_new_draw()
 
 if __name__ == "__main__":
+    # Запускаем Flask в отдельном потоке
     web_thread = Thread(target=run_web_server)
     web_thread.daemon = True
     web_thread.start()
+    # Запускаем основную логику бота (она сама зациклена)
     main()
-    while True:
-        time.sleep(10)
