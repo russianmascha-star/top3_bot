@@ -11,14 +11,13 @@ from flask import Flask
 from telegram import Bot
 from telegram.constants import ParseMode
 import asyncio
-from bs4 import BeautifulSoup  # обязательно установить через pip
+from bs4 import BeautifulSoup
 
 # ==================== НАСТРОЙКИ ====================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-CHECK_INTERVAL_SECONDS = 60  # можно увеличить до 300-600
-# Используем только HTML, так как API заблокирован
-HTML_URL = "https://www.stoloto.ru/top3/archive"
+CHECK_INTERVAL_SECONDS = 60  # можно увеличить до 300-600, если хотите реже проверять
+HTML_URL = "https://www.stoloto.ru/top3/archive"  # страница архива Топ-3
 # ===================================================
 
 # Настройка логирования
@@ -30,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-    logger.error("TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID не заданы!")
+    logger.error("TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID не заданы! Сообщения не будут отправляться.")
 
 last_draw_number = None
 app = Flask(__name__)
@@ -66,11 +65,11 @@ def send_telegram_sync(text):
     finally:
         loop.close()
 
-# ==================== Парсинг HTML ====================
+# ==================== Парсинг HTML (с перебором возможных селекторов) ====================
 def fetch_latest_draw():
     """
     Парсит страницу архива Топ-3 и возвращает данные последнего тиража
-    в формате, аналогичном API: {'drawNumber': int, 'results': [{'numbers': [int, int, int]}]}
+    в формате: {'drawNumber': int, 'results': [{'numbers': [int, int, int]}]}
     """
     try:
         logger.info(f"Загружаем страницу: {HTML_URL}")
@@ -82,28 +81,99 @@ def fetch_latest_draw():
 
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Находим все тиражи (они в блоках с классом "draws-item")
-        draws_items = soup.find_all('div', class_='draws-item')
-        if not draws_items:
-            logger.warning("Не найдены элементы с классом 'draws-item'")
+        # Логируем первые 2000 символов для отладки (уровень DEBUG, видно только если включить DEBUG)
+        logger.debug(f"HTML (первые 2000): {response.text[:2000]}")
+
+        # Пробуем несколько вариантов классов для контейнера тиража
+        possible_selectors = [
+            ('div', 'draws-item'),
+            ('div', 'result-item'),
+            ('tr', 'draw-row'),
+            ('div', 'tirage-item'),
+            ('div', 'item'),
+            ('div', 'draw'),          # иногда просто 'draw'
+            ('li', 'draws-item'),      # может быть список
+        ]
+
+        found = False
+        first_item = None
+        used_class = None
+        for tag, class_name in possible_selectors:
+            items = soup.find_all(tag, class_=class_name)
+            if items:
+                logger.info(f"Найдены элементы с классом '{class_name}': {len(items)} шт.")
+                first_item = items[0]
+                used_class = class_name
+                found = True
+                break
+
+        if not found:
+            logger.warning("Не найдены элементы с известными классами. Возможно, структура страницы изменилась.")
             return None
 
-        # Берём первый (последний) тираж
-        first_item = draws_items[0]
-        
-        # Номер тиража – в элементе с классом "draws-item__number"
-        number_elem = first_item.find('span', class_='draws-item__number')
+        # --- Извлечение номера тиража ---
+        # Пробуем разные варианты расположения номера
+        number_elem = None
+        number_selectors = [
+            ('span', 'draws-item__number'),
+            ('span', 'number'),
+            ('div', 'draw-number'),
+            ('td', 'number'),
+            ('span', 'draw-number'),
+        ]
+        for tag, class_name in number_selectors:
+            number_elem = first_item.find(tag, class_=class_name)
+            if number_elem:
+                break
         if not number_elem:
-            logger.warning("Не найден номер тиража")
+            # Если не нашли по классу, ищем любой элемент, содержащий "№" и цифры
+            all_spans = first_item.find_all('span')
+            for span in all_spans:
+                if '№' in span.get_text():
+                    number_elem = span
+                    break
+        if not number_elem:
+            logger.warning("Не удалось найти номер тиража")
             return None
-        draw_number_text = number_elem.get_text(strip=True)
-        # Номер может быть в формате "№12345", извлекаем цифры
-        draw_number = int(re.search(r'\d+', draw_number_text).group())
 
-        # Числа – в элементах с классом "draws-item__number-ball" (обычно 3 штуки)
-        balls = first_item.find_all('span', class_='draws-item__number-ball')
+        draw_number_text = number_elem.get_text(strip=True)
+        # Извлекаем первое число из текста (например, "№12345" или "12345")
+        match = re.search(r'\d+', draw_number_text)
+        if not match:
+            logger.warning(f"Не удалось извлечь номер из текста: {draw_number_text}")
+            return None
+        draw_number = int(match.group())
+
+        # --- Извлечение чисел (шаров) ---
+        balls = []
+        ball_selectors = [
+            ('span', 'draws-item__number-ball'),
+            ('span', 'ball'),
+            ('td', 'number-ball'),
+            ('span', 'number-ball'),
+            ('div', 'ball'),
+        ]
+        for tag, class_name in ball_selectors:
+            balls = first_item.find_all(tag, class_=class_name)
+            if balls and len(balls) >= 3:
+                break
+
         if len(balls) < 3:
-            logger.warning(f"Найдено только {len(balls)} шаров, ожидалось 3")
+            logger.warning(f"Найдено только {len(balls)} шаров, пытаемся найти числа внутри других элементов")
+            # Может быть, числа лежат просто в ячейках без специального класса
+            all_cells = first_item.find_all(['td', 'span', 'div'])
+            balls = []
+            for cell in all_cells:
+                text = cell.get_text(strip=True)
+                if text.isdigit() and len(text) == 1:  # предположим, числа однозначные
+                    balls.append(cell)
+            if len(balls) >= 3:
+                balls = balls[:3]
+            else:
+                balls = []  # сброс, если не нашли
+
+        if len(balls) < 3:
+            logger.warning("Не удалось найти три числа для тиража")
             numbers = []
         else:
             numbers = [int(ball.get_text(strip=True)) for ball in balls[:3]]
