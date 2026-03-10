@@ -13,7 +13,7 @@ from flask import Flask
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GAME_NAME = "top3"
-CHECK_INTERVAL_SECONDS = 300  # 5 минут для теста (потом вернёте 900)
+CHECK_INTERVAL_SECONDS = 300  # 5 минут для теста, потом замените на 900
 API_URL = f"https://www.stoloto.ru/p/api/mobile/api/v34/service/draws/archive?count=1&game={GAME_NAME}"
 # ===============================
 
@@ -25,9 +25,6 @@ app = Flask(__name__)
 @app.route('/')
 def health():
     return "Bot is running", 200
-
-def run_flask():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
 
 # --- Функции бота ---
 async def send_telegram_message(text):
@@ -80,24 +77,22 @@ def check_new_draw():
     else:
         print("➖ Новых тиражей нет")
 
-# --- Главная функция ---
-def main():
-    print("🚀 Бот для мониторинга ТОП-3 запущен (упрощённая версия)")
-    print(f"⏱️ Проверка каждые {CHECK_INTERVAL_SECONDS//60} мин")
-    
-    # Первая проверка
+def background_check():
+    """Функция, работающая в фоновом потоке: делает проверки и спит."""
+    print("🚀 Запуск фонового потока с проверками")
+    # Первая проверка сразу
     check_new_draw()
-    
-    # Бесконечный цикл проверок
+    # Затем цикл
     while True:
-        print(f"💤 Спим {CHECK_INTERVAL_SECONDS} сек...")
+        print(f"💤 Фоновый поток спит {CHECK_INTERVAL_SECONDS} сек...")
         time.sleep(CHECK_INTERVAL_SECONDS)
         check_new_draw()
 
 if __name__ == "__main__":
-    # Запускаем Flask в отдельном потоке
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    # Запускаем основную логику
-    main()
+    # Запускаем фоновый поток для проверок
+    bg_thread = threading.Thread(target=background_check)
+    bg_thread.daemon = True
+    bg_thread.start()
+    print("✅ Фоновый поток запущен, теперь запускаем Flask в главном потоке")
+    # Запускаем Flask (блокирует главный поток)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
