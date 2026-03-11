@@ -18,7 +18,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 CHECK_INTERVAL_SECONDS = 60
 
-# Ключ ScrapingBee
+# Ключ ScrapingBee (ваш)
 SCRAPINGBEE_API_KEY = "3KG51UIRHKF5U0SS73Z3TQ30EZQYYD3ISHPW0BC6VFJJTPT7D3CRTGUKXDGOG9WR99ZTVC4BKRXRUAFK"
 
 # Целевая страница (архив)
@@ -67,16 +67,18 @@ def fetch_html_via_scrapingbee():
             'render_js': 'true',
             'premium_proxy': 'true',
             'country_code': 'ru',
+            'wait': '5000',  # ждать 5 секунд для загрузки JS
         }
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 YaBrowser/24.10.0 Safari/537.36'
         }
         logger.info(f"Запрос к ScrapingBee (с JS) для {TARGET_URL}")
-        resp = requests.get(scrapingbee_url, params=params, headers=headers, timeout=30)
+        resp = requests.get(scrapingbee_url, params=params, headers=headers, timeout=60)
         logger.info(f"Статус ScrapingBee: {resp.status_code}")
         if resp.status_code != 200:
             logger.error(f"Ошибка ScrapingBee: {resp.status_code} - {resp.text[:200]}")
             return None
+        logger.info(f"ScrapingBee вернул {len(resp.text)} символов")
         return resp.text
     except Exception as e:
         logger.error(f"Ошибка при запросе ScrapingBee: {e}")
@@ -87,14 +89,17 @@ def parse_draw_from_html(html):
     try:
         soup = BeautifulSoup(html, 'html.parser')
         
-        # Поиск контейнеров тиражей
+        # Поиск контейнеров тиражей (актуальные классы на странице)
         draw_items = soup.find_all('div', class_='draws-item')
         if not draw_items:
-            draw_items = soup.find_all('div', class_='result-item') or soup.find_all('tr', class_='draw-row')
+            draw_items = soup.find_all('div', class_='result-item')
+        if not draw_items:
+            draw_items = soup.find_all('tr', class_='draw-row')
         
         if not draw_items:
             logger.warning("Не найдены элементы тиражей в HTML")
-            logger.debug(f"HTML (первые 5000): {html[:5000]}")
+            # Выведем первые 2000 символов для отладки
+            logger.warning(f"HTML фрагмент: {html[:2000]}")
             return None
         
         first = draw_items[0]
@@ -121,7 +126,17 @@ def parse_draw_from_html(html):
         
         if len(numbers) != 3:
             logger.warning(f"Найдено только {len(numbers)} чисел: {numbers}")
-            return None
+            # Попробуем найти числа в других местах (например, внутри ячеек таблицы)
+            cells = first.find_all('td')
+            numbers = []
+            for cell in cells:
+                text = cell.get_text(strip=True)
+                if text.isdigit() and len(text) <= 2:
+                    numbers.append(int(text))
+            if len(numbers) >= 3:
+                numbers = numbers[:3]
+            else:
+                return None
         
         logger.info(f"✅ Из HTML получен тираж №{draw_number}, числа: {numbers}")
         return {'drawNumber': draw_number, 'numbers': numbers}
