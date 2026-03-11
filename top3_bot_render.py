@@ -16,12 +16,17 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 CHECK_INTERVAL_SECONDS = 60
 
-# Список потенциальных API для Топ-3
+# Расширенный список потенциальных API для Топ-3
 API_URLS = [
-    "https://www.stoloto.ru/api/v1/draws/top3?limit=1",
-    "https://www.stoloto.ru/api/v1/top3/draws/last",
+    # Пробуем разные варианты (первые два уже давали 200)
     "https://www.stoloto.ru/top3/archive/draws",
     "https://www.stoloto.ru/top3/archive/last",
+    "https://www.stoloto.ru/top3/archive?format=json",
+    "https://www.stoloto.ru/top3/archive/data",
+    "https://www.stoloto.ru/api/v1/top3/archive?limit=1",
+    "https://www.stoloto.ru/api/v1/games/top3/draws/latest",
+    "https://www.stoloto.ru/api/v2/top3/draws/last",
+    "https://www.stoloto.ru/top3/result/last?json=1",
     "https://www.stoloto.ru/p/api/mobile/api/v34/service/draws/archive?count=1&game=top3",
     "https://www.stoloto.ru/p/api/mobile/api/v34/service/draws/last?game=top3",
     "https://www.stoloto.ru/p/api/mobile/api/v34/service/draws/archive?count=1&game=top3-1",
@@ -79,7 +84,14 @@ def try_api(url):
         logger.info(f"Пробуем API: {url}")
         resp = session.get(url, timeout=10)
         logger.info(f"Статус: {resp.status_code}")
+        
+        # Если статус 200, но не JSON, выведем начало ответа для анализа
         if resp.status_code == 200:
+            content_type = resp.headers.get('Content-Type', '')
+            if 'application/json' not in content_type:
+                logger.warning(f"Content-Type: {content_type}, первые 500 символов ответа:")
+                logger.warning(resp.text[:500])
+            
             try:
                 data = resp.json()
                 logger.info(f"JSON получен, ключи: {list(data.keys()) if isinstance(data, dict) else 'list'}")
@@ -153,7 +165,7 @@ def check_new_draw():
     if last_draw_number is None:
         last_draw_number = current_number
         logger.info(f"ℹ️ Последний известный тираж: №{last_draw_number}")
-        # При первом запуске можно отправить сообщение о последнем тираже (опционально)
+        # При первом запуске отправим сообщение о последнем тираже
         numbers_text = format_numbers_only(draw_data)
         send_telegram_sync(f"Бот запущен. Последний тираж: №{current_number} {numbers_text}")
     elif current_number > last_draw_number:
