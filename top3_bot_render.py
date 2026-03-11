@@ -16,11 +16,12 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 CHECK_INTERVAL_SECONDS = 60
 
-# API Столото (тот, что работал в браузере)
 API_URL = "https://www.stoloto.ru/p/api/mobile/api/v35/service/draws/archive?game=top3&count=1&page=1"
 
-# Прокси (вставьте свои данные, уберите лишние символы)
-PROXY = "socks5://NYW9PY:AK5yG3pUe2av@bproxy.site:19063"  # Или http://NYW9PY:AK5yG3pUe2av@mproxy.site:19063
+# Прокси (SOCKS5) — если не работает, замените на HTTP
+PROXY = "socks5://NYW9PY:AK5yG3pUe2av@bproxy.site:19063"
+# Альтернатива HTTP (не требует доп. библиотек):
+# PROXY = "http://NYW9PY:AK5yG3pUe2av@mproxy.site:19063"
 # ===================================================
 
 logging.basicConfig(
@@ -36,7 +37,6 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
 last_draw_number = None
 app = Flask(__name__)
 
-# Заголовки из браузера (актуальные)
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 YaBrowser/24.10.0 Safari/537.36',
     'Accept': '*/*',
@@ -78,20 +78,14 @@ def send_telegram_sync(text):
     finally:
         loop.close()
 
-# ==================== Запрос к API через прокси ====================
+# ==================== Запрос через прокси ====================
 def fetch_latest_draw():
     try:
         session = requests.Session()
         session.headers.update(HEADERS)
-        
-        # Настройка прокси (прямо в коде)
-        session.proxies = {
-            'http': PROXY,
-            'https': PROXY
-        }
+        session.proxies = {'http': PROXY, 'https': PROXY}
         logger.info(f"✅ Использую прокси: {PROXY.split('@')[-1]}")
 
-        logger.info(f"Запрос к API: {API_URL}")
         resp = session.get(API_URL, timeout=30)
         logger.info(f"Статус: {resp.status_code}")
 
@@ -174,7 +168,6 @@ def status():
         'interval': CHECK_INTERVAL_SECONDS
     }
 
-# ==================== Запуск ====================
 if __name__ == "__main__":
     bg = threading.Thread(target=background_loop, daemon=True)
     bg.start()
