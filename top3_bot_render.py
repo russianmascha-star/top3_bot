@@ -5,19 +5,23 @@ import time
 import threading
 import os
 import sys
+import re
 import logging
 from flask import Flask
 from telegram import Bot
 from telegram.constants import ParseMode
 import asyncio
+from bs4 import BeautifulSoup
 
 # ==================== НАСТРОЙКИ ====================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 CHECK_INTERVAL_SECONDS = 60
 
-# Рабочий API (найден через браузер)
+# API с правильными заголовками
 API_URL = "https://www.stoloto.ru/p/api/mobile/api/v35/service/draws/archive?game=top3&count=1&page=1"
+# Запасной вариант: парсинг страницы последнего тиража
+HTML_URL = "https://www.stoloto.ru/top3/result/last"
 # ===================================================
 
 logging.basicConfig(
@@ -33,7 +37,7 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
 last_draw_number = None
 app = Flask(__name__)
 
-# ========== ЗАГОЛОВКИ ИЗ БРАУЗЕРА ==========
+# ========== ЗАГОЛОВКИ ИЗ БРАУЗЕРА (с новыми параметрами) ==========
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
@@ -49,8 +53,12 @@ HEADERS = {
     'Sec-Ch-Ua-Platform': '"Windows"',
     'Sec-Ch-Ua': '"Chromium";v="128", "Not;A=Brand";v="24", "YaBrowser";v="24.10", "Yowser";v="2.5"',
     'Accept-Encoding': 'gzip, deflate, br, zstd',
-    # Строка с куками (скопирована из браузера) – замените на свою актуальную
-    'Cookie': 'afUserId=35bd8c8d-bc69-460e-bbe6-c0f860d6431a-p; _ga=GA1.1.2046642867.1738593657; _ga_W13573SET9=GS1.1.1739737222.2.1.1739738067.41.0.0; _ym_uid=1738593658432600190; _ym_d=1773996214; _ym_isad=2; _ymab_param=GmwkAQRTX3yeu_CfgqV0D0toUpyVqCyahDK5OHZB3mo6YXDJWZcplhwf7FB4VGsat2OKBvaw4n3UWZ21J85x44HBAWo; _ym_visorc=b; adtech_uid=90dd2e76-8e5d-48e8-bbc7-711a864f523e%3Astoloto.ru; top100_id=t1.7713245.1423689402.1773996219731; gnezdo_uid=194cc4204cab855102bd4f5c; tmr_lvid=dd07971b09d6dcd6eeb43279a0e3265d; tmr_lvidTS=1738593660214; AF_SYNC=1773996223005; fingerprint=3774101085; domain_sid=lwx-bSPlsv3b-Aqwn0A7I%3A1773996223262; adrdel=1773996223596; adrcid=AupxI9BFvXKHV8apKt8KADQ; advcake_track_id=93468fc3-8a00-4b78-1dd4-35938755f588; advcake_session_id=0e25c93c-e6ff-997a-f92d-939f9470f420; acs_3=%7B%22hash%22%3A%221aa3f9523ee6c2690cb34fc702d4143056487c0d%22%2C%22nst%22%3A1774082624623%2C%22sl%22%3A%7B%22224%22%3A1773996224623%2C%221228%22%3A1773996224623%7D%7D; uxs_uid=e7fc5bc0-2438-11f1-ae1a-f5df185c8117; flocktory-uuid=91b13743-a1d9-479a-9172-fb57fb141bc0-0; ga=1e86f2a700-566331-41b406-b68f85-13836177b21027; wimhash21=6e802444cf78ec59d80012c4d2ea5827; Scaleo_source=false; stlt_referral=ya.ru; stlt_clientids=ymcid1738593658432600190|uid1690847362; stlt_parameters=af_ad=c:perf:sc:y:on:1:p:pc:ap:y:s:yandex:g:pu:bt:cpc:a:ft:i:cid88698007-gid5462330338-adid1844984782753660734&pid=yandex&af_channel=cpc&c=ONG_MK_BRAND_FIRSTPAY_CPC-cid88698007; advcake_track_url=%3D20250113nJR5gzd7GrbDZiNqi4BGNa2SY6FYx1S%2F0crvCEAYnvOlcvrD9h2xA%2FKLQd1aCnM3fymg33hX8x6efIDpT%2BleZEZXZi14Bsn4gToi7gWvv7omGQeA6soVVB10Q%2Bjgx6Ma8mtSn0h0W0dNmZYhJxOvAxPRGmu4lwyXiajHGYQhuWeMWhs0gYZx9FWvkww%2BiiNldBuAtHJ1TtkF3pDvad7%2F%2FSULtzVkPJ%2B1nisYi%2BiV0JC8iN8AnfwYkOeM3KzeoDFwntF31NmX7JUaiFSXFpo9z70lOS1em0XF1g4F8jjwfFWr2hTxmvsGOcTfGKeUZFEemNjscx2A9whfWksY%2FkTEZdx9y06utoyyg%2B3vSYDU41cZpGK3kB6O4iK3sGYZr5%2BjKHbDQ5a7UTq5EFdKVzwOKQ6k%2Ffz%2BbYTT1IwJo2mEVkWVL8dSl2Zc8uLRgvOYJpfjtoQcg7kVaSNPKq0sc1AVSvlWxAnJy4Z%2FMxGAYP%2BrMWkFzgMxMPSRCiOK1aU7ce4IhTI52B4qsErtB51h3ZcYmLvodA3UU6P2Qx6pUvQlgRzT6Pj7Bf1sndM%2FIvBDufrfmAv%2BFjbUqVOBXmS97Ww69qJZ7PTmCfZLf2iY7dgIOdG5RnrzeD5o6mDH%2F2kO3YirK4Wq6u0%2FzmBalviDuGaVEBT0B%2BzW9VrGwkGzQw3L0OYgAL%2FkkbhJvWc%3D; tmr_detect=0%7C1773998028326; t3_sid_7713245=s1.737870141.1773996219737.1773998149361.1.39.6.1..'
+    # Критически важные заголовки, найденные вами:
+    'gosloto-partner': 'bXMjXFRXZ3coWXh6R3s1NTdUX3dnWlBMLUxmdg',
+    'gosloto-token': '1e86f2a700-566331-41b406-b68f85-13836177b21027',
+    'priority': 'u=1, i',
+    # Куки (обновите, если устареют)
+    'Cookie': 'afUserId=35bd8c8d-bc69-460e-bbe6-c0f860d6431a-p; _ga=GA1.1.2046642867.1738593657; _ga_W13573SET9=GS1.1.1739737222.2.1.1739738067.41.0.0; _ym_uid=1738593658432600190; _ym_d=1773996214; _ym_isad=2; _ymab_param=GmwkAQRTX3yeu_CfgqV0D0toUpyVqCyahDK5OHZB3mo6YXDJWZcplhwf7FB4VGsat2OKBvaw4n3UWZ21J85x44HBAWo; _ym_visorc=b; adtech_uid=90dd2e76-8e5d-48e8-bbc7-711a864f523e%3Astoloto.ru; top100_id=t1.7713245.1423689402.1773996219731; gnezdo_uid=194cc4204cab855102bd4f5c; tmr_lvid=dd07971b09d6dcd6eeb43279a0e3265d; tmr_lvidTS=1738593660214; AF_SYNC=1773996223005; fingerprint=3774101085; domain_sid=lwx-bSPlsv3b-Aqwn0A7I%3A1773996223262; adrdel=1773996223596; adrcid=AupxI9BFvXKHV8apKt8KADQ; advcake_track_id=93468fc3-8a00-4b78-1dd4-35938755f588; advcake_session_id=0e25c93c-e6ff-997a-f92d-939f9470f420; acs_3=%7B%22hash%22%3A%221aa3f9523ee6c2690cb34fc702d4143056487c0d%22%2C%22nst%22%3A1774082624623%2C%22sl%22%3A%7B%22224%22%3A1773996224623%2C%221228%22%3A1773996224623%7D%7D; uxs_uid=e7fc5bc0-2438-11f1-ae1a-f5df185c8117; flocktory-uuid=91b13743-a1d9-479a-9172-fb57fb141bc0-0; ga=1e86f2a700-566331-41b406-b68f85-13836177b21027; wimhash21=6e802444cf78ec59d80012c4d2ea5827; Scaleo_source=false; stlt_referral=ya.ru; stlt_clientids=ymcid1738593658432600190|uid1690847362; stlt_parameters=af_ad=c:perf:sc:y:on:1:p:pc:ap:y:s:yandex:g:pu:bt:cpc:a:ft:i:cid88698007-gid5462330338-adid1844984782753660734&pid=yandex&af_channel=cpc&c=ONG_MK_BRAND_FIRSTPAY_CPC-cid88698007; advcake_track_url=%3D20250113nJR5gzd7GrbDZiNqi4BGNa2SY6FYx1S%2F0crvCEAYnvOlcvrD9h2xA%2FKLQd1aCnM3fymg33hX8x6efIDpT%2BleZEZXZi14Bsn4gToi7gWvv7omGQeA6soVVB10Q%2Bjgx6Ma8mtSn0h0W0dNmZYhJxOvAxPRGmu4lwyXiajHGYQhuWeMWhs0gYZx9FWvkww%2BiiNldBuAtHJ1TtkF3pDvad7%2F%2FSULtzVkPJ%2B1nisYi%2BiV0JC8iN8AnfwYkOeM3KzeoDFwntF31NmX7JUaiFSXFpo9z70lOS1em0XF1g4F8jjwfFWr2hTxmvsGOcTfGKeUZFEemNjscx2A9whfWksY%2FkTEZdx9y06utoyyg%2B3vSYDU41cZpGK3kB6O4iK3sGYZr5%2BjKHbDQ5a7UTq5EFdKVzwOKQ6k%2Ffz%2BbYTT1IwJo2mEVkWVL8dSl2Zc8uLRgvOYJpfjtoQcg7kVaSNPKq0sc1AVSvlWxAnJy4Z%2FMxGAYP%2BrMWkFzgMxMPSRCiOK1aU7ce4IhTI52B4qsErtB51h3ZcYmLvodA3UU6P2Qx6pUvQlgRzT6Pj7Bf1sndM%2FIvBDufrfmAv%2BFjbUqVOBXmS97Ww69qJZ7PTmCfZLf2iY7dgIOdG5RnrzeD5o6mDH%2F2kO3YirK4Wq6u0%2FzmBalviDuGaVEBT0B%2BzW9VrGwkGzQw3L0OYgAL%2FkkbhJvWc%3D; tmr_detect=0%7C1773998028326; t3_sid_7713245=s1.737870141.1773996219737.1773998149361.1.39.6.1..',
 }
 
 session = requests.Session()
@@ -75,20 +83,17 @@ def send_telegram_sync(text):
     finally:
         loop.close()
 
-# ==================== Получение последнего тиража ====================
-def fetch_latest_draw():
+# ==================== Получение данных: API (основной) ====================
+def fetch_latest_draw_from_api():
     try:
         logger.info(f"Запрос к API: {API_URL}")
         resp = session.get(API_URL, timeout=10)
-        logger.info(f"Статус: {resp.status_code}")
+        logger.info(f"Статус API: {resp.status_code}")
         logger.info(f"Content-Type: {resp.headers.get('Content-Type', 'не указан')}")
-        
         if resp.status_code != 200:
-            logger.error(f"Ошибка API: {resp.status_code}")
             if resp.text:
                 logger.warning(f"Тело ответа: {resp.text[:500]}")
             return None
-        
         data = resp.json()
         if isinstance(data, dict) and 'draws' in data:
             draws = data['draws']
@@ -98,22 +103,66 @@ def fetch_latest_draw():
                 numbers = []
                 if 'results' in draw and len(draw['results']) > 0:
                     numbers = draw['results'][0].get('numbers', [])
-                logger.info(f"✅ Получен тираж №{draw_number}, числа: {numbers}")
-                return {'drawNumber': draw_number, 'numbers': numbers}
-        elif isinstance(data, list) and len(data) > 0:
-            draw = data[0]
-            draw_number = draw.get('drawNumber') or draw.get('number')
-            numbers = []
-            if 'results' in draw and len(draw['results']) > 0:
-                numbers = draw['results'][0].get('numbers', [])
-            logger.info(f"✅ Получен тираж №{draw_number}, числа: {numbers}")
-            return {'drawNumber': draw_number, 'numbers': numbers}
-        else:
-            logger.warning(f"Неожиданная структура JSON: {data}")
-            return None
-    except Exception as e:
-        logger.error(f"Ошибка при запросе: {e}", exc_info=True)
+                if draw_number and numbers:
+                    logger.info(f"✅ Из API получен тираж №{draw_number}, числа: {numbers}")
+                    return {'drawNumber': draw_number, 'numbers': numbers}
+        logger.warning("Не удалось извлечь данные из API")
         return None
+    except Exception as e:
+        logger.error(f"Ошибка API: {e}")
+        return None
+
+# ==================== Запасной вариант: парсинг HTML ====================
+def fetch_latest_draw_from_html():
+    try:
+        logger.info(f"Загружаем страницу последнего тиража: {HTML_URL}")
+        resp = session.get(HTML_URL, timeout=15)
+        if resp.status_code != 200:
+            logger.error(f"Ошибка загрузки HTML: {resp.status_code}")
+            return None
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        # Поиск номера тиража
+        draw_number = None
+        number_elem = (soup.find('span', class_='draw-number') or 
+                       soup.find('div', class_='draw-number') or 
+                       soup.find('span', class_='number'))
+        if number_elem:
+            text = number_elem.get_text(strip=True)
+            match = re.search(r'\d+', text)
+            if match:
+                draw_number = int(match.group())
+        else:
+            for tag in soup.find_all(['span', 'div', 'p']):
+                text = tag.get_text(strip=True)
+                if '№' in text and re.search(r'\d+', text):
+                    match = re.search(r'\d+', text)
+                    draw_number = int(match.group())
+                    break
+        # Поиск чисел (шаров)
+        numbers = []
+        ball_elems = (soup.find_all('span', class_='ball') or 
+                      soup.find_all('span', class_='number-ball') or 
+                      soup.find_all('div', class_='ball'))
+        for ball in ball_elems[:3]:
+            text = ball.get_text(strip=True)
+            if text.isdigit():
+                numbers.append(int(text))
+        if draw_number and len(numbers) == 3:
+            logger.info(f"✅ Из HTML получен тираж №{draw_number}, числа: {numbers}")
+            return {'drawNumber': draw_number, 'numbers': numbers}
+        logger.warning("Не удалось извлечь номер или числа из HTML")
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка HTML парсинга: {e}")
+        return None
+
+def fetch_latest_draw():
+    """Сначала пробует API (с новыми заголовками), если не вышло — HTML"""
+    draw = fetch_latest_draw_from_api()
+    if draw:
+        return draw
+    logger.warning("API не дал данных, пробуем HTML...")
+    return fetch_latest_draw_from_html()
 
 def format_numbers_only(draw):
     numbers = draw.get('numbers', [])
