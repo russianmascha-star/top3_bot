@@ -1,5 +1,6 @@
 import requests
 import json
+import re
 from datetime import datetime
 import time
 import threading
@@ -10,14 +11,18 @@ from flask import Flask
 from telegram import Bot
 from telegram.constants import ParseMode
 import asyncio
+from bs4 import BeautifulSoup
 
 # ==================== НАСТРОЙКИ ====================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 CHECK_INTERVAL_SECONDS = 60
 
-# Рабочий API (найден в сети)
-API_URL = "https://www.stoloto.ru/top3/archive/draws?drawsPerPage=1"
+# Ключ ScrapingBee (ваш)
+SCRAPINGBEE_API_KEY = "3KG51UIRHKF5U0SS73Z3TQ30EZQYYD3ISHPW0BC6VFJJTPT7D3CRTGUKXDGOG9WR99ZTVC4BKRXRUAFK"
+
+# Целевая страница
+TARGET_URL = "https://www.stoloto.ru/top3/archive"
 # ===================================================
 
 logging.basicConfig(
@@ -32,15 +37,6 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
 
 last_draw_number = None
 app = Flask(__name__)
-
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Referer': 'https://www.stoloto.ru/top3/archive',
-}
-
-session = requests.Session()
-session.headers.update(HEADERS)
 
 # ==================== Telegram ====================
 async def send_telegram_message(text):
@@ -61,40 +57,103 @@ def send_telegram_sync(text):
     finally:
         loop.close()
 
-# ==================== Получение последнего тиража ====================
-def fetch_latest_draw():
+# ==================== Получение HTML через ScrapingBee с ожиданием селектора ====================
+def fetch_html_via_scrapingbee():
     try:
-        logger.info(f"Запрос к API: {API_URL}")
-        resp = session.get(API_URL, timeout=10)
-        logger.info(f"Статус: {resp.status_code}")
-        
-        # Выводим первые 500 символов ответа для отладки
-        if resp.text:
-            logger.info(f"Первые 500 символов ответа: {resp.text[:500]}")
-        
+        scrapingbee_url = "https://app.scrapingbee.com/api/v1/"
+        params = {
+            'api_key': SCRAPINGBEE_API_KEY,
+            'url': TARGET_URL,
+            'render_js': 'true',
+            'premium_proxy': 'true',
+            'country_code': 'ru',
+            'wait': '5000',           # ждать 5 секунд перед рендерингом
+            'wait_for': '.draws-item', # ждать появления этого элемента (максимум 10 секунд)
+            'timeout': '15000',        # общий таймаут
+        }
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 YaBrowser/24.10.0 Safari/537.36'
+        }
+        logger.info(f"Запрос к ScrapingBee (с JS и ожиданием селектора) для {TARGET_URL}")
+        resp = requests.get(scrapingbee_url, params=params, headers=headers, timeout=30)
+        logger.info(f"Статус ScrapingBee: {resp.status_code}")
         if resp.status_code != 200:
-            logger.error(f"Ошибка API: {resp.status_code}")
+            logger.error(f"Ошибка ScrapingBee: {resp.status_code} - {resp.text[:200]}")
+            return None
+        logger.info(f"ScrapingBee вернул {len(resp.text)} символов")
+        return resp.text
+    except Exception as e:
+        logger.error(f"Ошибка при запросе ScrapingBee: {e}")
+        return None
+
+def parse_draw_from_html(html):
+    """Парсит HTML страницы архива и извлекает последний тираж"""
+    try:
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # Ищем контейнеры тиражей
+        draw_items = soup.find_all('div', class_='draws-item')
+        if not draw_items:
+            logger.warning("Не найдены элементы с классом 'draws-item'")
+            # Попробуем найти JSON внутри скриптов
+            scripts = soup.find_all('script')
+            for script in scripts:
+                if script.string and ('__INITIAL_STATE__' in script.string or 'draws' in script.string):
+                    # Ищем JSON в тексте скрипта
+                    match = re.search(r'({.*"draws".*})', script.string, re.DOTALL)
+                    if match:
+                        try:
+                            data = json.loads(match.group(1))
+                            if 'draws' in data and len(data['draws']) > 0:
+                                draw = data['draws'][0]
+                                draw_number = draw.get('number') or draw.get('drawNumber')
+                                numbers = draw.get('numbers', [])
+                                if not numbers and 'results' in draw:
+                                    numbers = draw['results'][0].get('numbers', [])
+                                if draw_number and numbers:
+                                    logger.info(f"✅ Из JSON получен тираж №{draw_number}, числа: {numbers}")
+                                    return {'drawNumber': draw_number, 'numbers': numbers}
+                        except:
+                            continue
             return None
         
-        data = resp.json()
-        # Ожидаем список тиражей
-        if isinstance(data, list) and len(data) > 0:
-            draw = data[0]
-            draw_number = draw.get('number') or draw.get('drawNumber')
-            numbers = draw.get('numbers', [])
-            if not numbers and 'results' in draw:
-                numbers = draw['results'][0].get('numbers', [])
-            logger.info(f"✅ Получен тираж №{draw_number}, числа: {numbers}")
-            return {'drawNumber': draw_number, 'numbers': numbers}
-        else:
-            logger.warning(f"Неожиданная структура JSON: {data}")
+        first = draw_items[0]
+        
+        # Номер тиража
+        number_elem = first.find('span', class_='draws-item__number') or first.find('span', class_='number')
+        if not number_elem:
+            logger.warning("Не найден номер тиража")
             return None
-    except json.JSONDecodeError as e:
-        logger.error(f"Ошибка парсинга JSON: {e}")
-        return None
+        number_text = number_elem.get_text(strip=True)
+        match = re.search(r'\d+', number_text)
+        if not match:
+            logger.warning(f"Не удалось извлечь номер из: {number_text}")
+            return None
+        draw_number = int(match.group())
+        
+        # Числа
+        ball_elems = first.find_all('span', class_='draws-item__number-ball') or first.find_all('span', class_='ball')
+        numbers = []
+        for ball in ball_elems[:3]:
+            text = ball.get_text(strip=True)
+            if text.isdigit():
+                numbers.append(int(text))
+        
+        if len(numbers) != 3:
+            logger.warning(f"Найдено только {len(numbers)} чисел: {numbers}")
+            return None
+        
+        logger.info(f"✅ Из HTML получен тираж №{draw_number}, числа: {numbers}")
+        return {'drawNumber': draw_number, 'numbers': numbers}
     except Exception as e:
-        logger.error(f"Ошибка при запросе: {e}")
+        logger.error(f"Ошибка парсинга HTML: {e}")
         return None
+
+def fetch_latest_draw():
+    html = fetch_html_via_scrapingbee()
+    if not html:
+        return None
+    return parse_draw_from_html(html)
 
 def format_numbers_only(draw):
     numbers = draw.get('numbers', [])
