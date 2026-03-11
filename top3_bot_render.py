@@ -67,6 +67,11 @@ def fetch_latest_draw():
         logger.info(f"Запрос к API: {API_URL}")
         resp = session.get(API_URL, timeout=10)
         logger.info(f"Статус: {resp.status_code}")
+        
+        # Выводим первые 500 символов ответа для отладки
+        if resp.text:
+            logger.info(f"Первые 500 символов ответа: {resp.text[:500]}")
+        
         if resp.status_code != 200:
             logger.error(f"Ошибка API: {resp.status_code}")
             return None
@@ -84,6 +89,9 @@ def fetch_latest_draw():
         else:
             logger.warning(f"Неожиданная структура JSON: {data}")
             return None
+    except json.JSONDecodeError as e:
+        logger.error(f"Ошибка парсинга JSON: {e}")
+        return None
     except Exception as e:
         logger.error(f"Ошибка при запросе: {e}")
         return None
