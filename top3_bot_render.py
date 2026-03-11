@@ -16,22 +16,8 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 CHECK_INTERVAL_SECONDS = 60
 
-# Расширенный список потенциальных API для Топ-3
-API_URLS = [
-    # Пробуем разные варианты (первые два уже давали 200)
-    "https://www.stoloto.ru/top3/archive/draws",
-    "https://www.stoloto.ru/top3/archive/last",
-    "https://www.stoloto.ru/top3/archive?format=json",
-    "https://www.stoloto.ru/top3/archive/data",
-    "https://www.stoloto.ru/api/v1/top3/archive?limit=1",
-    "https://www.stoloto.ru/api/v1/games/top3/draws/latest",
-    "https://www.stoloto.ru/api/v2/top3/draws/last",
-    "https://www.stoloto.ru/top3/result/last?json=1",
-    "https://www.stoloto.ru/p/api/mobile/api/v34/service/draws/archive?count=1&game=top3",
-    "https://www.stoloto.ru/p/api/mobile/api/v34/service/draws/last?game=top3",
-    "https://www.stoloto.ru/p/api/mobile/api/v34/service/draws/archive?count=1&game=top3-1",
-    "https://www.stoloto.ru/p/api/mobile/api/v34/service/draws/last?game=top3-1",
-]
+# Рабочий API (найден через браузер)
+API_URL = "https://www.stoloto.ru/p/api/mobile/api/v35/service/draws/archive?game=top3&count=1&page=1"
 # ===================================================
 
 logging.basicConfig(
@@ -52,6 +38,7 @@ HEADERS = {
     'Accept': 'application/json, text/plain, */*',
     'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
     'Referer': 'https://www.stoloto.ru/top3/archive',
+    'Origin': 'https://www.stoloto.ru',
     'Connection': 'keep-alive',
 }
 
@@ -77,68 +64,45 @@ def send_telegram_sync(text):
     finally:
         loop.close()
 
-# ==================== Поиск работающего API ====================
-def try_api(url):
-    """Пробует один URL, возвращает (успех, данные)"""
-    try:
-        logger.info(f"Пробуем API: {url}")
-        resp = session.get(url, timeout=10)
-        logger.info(f"Статус: {resp.status_code}")
-        
-        # Если статус 200, но не JSON, выведем начало ответа для анализа
-        if resp.status_code == 200:
-            content_type = resp.headers.get('Content-Type', '')
-            if 'application/json' not in content_type:
-                logger.warning(f"Content-Type: {content_type}, первые 500 символов ответа:")
-                logger.warning(resp.text[:500])
-            
-            try:
-                data = resp.json()
-                logger.info(f"JSON получен, ключи: {list(data.keys()) if isinstance(data, dict) else 'list'}")
-                # Попытаемся извлечь номер тиража и числа
-                draw_number = None
-                numbers = []
-                if isinstance(data, dict):
-                    if 'draws' in data and len(data['draws']) > 0:
-                        draw = data['draws'][0]
-                        draw_number = draw.get('drawNumber') or draw.get('number')
-                        if 'results' in draw and len(draw['results']) > 0:
-                            numbers = draw['results'][0].get('numbers', [])
-                    elif 'draw' in data:
-                        draw = data['draw']
-                        draw_number = draw.get('drawNumber') or draw.get('number')
-                        if 'results' in draw and len(draw['results']) > 0:
-                            numbers = draw['results'][0].get('numbers', [])
-                    elif 'drawNumber' in data:
-                        draw_number = data['drawNumber']
-                        if 'results' in data and len(data['results']) > 0:
-                            numbers = data['results'][0].get('numbers', [])
-                elif isinstance(data, list) and len(data) > 0:
-                    draw = data[0]
-                    draw_number = draw.get('drawNumber') or draw.get('number')
-                    if 'results' in draw and len(draw['results']) > 0:
-                        numbers = draw['results'][0].get('numbers', [])
-                
-                if draw_number is not None:
-                    logger.info(f"✅ Найден тираж №{draw_number}, числа: {numbers}")
-                    return True, {'drawNumber': draw_number, 'numbers': numbers}
-                else:
-                    logger.warning("Не удалось извлечь номер тиража из JSON")
-            except json.JSONDecodeError:
-                logger.warning("Ответ не является JSON")
-        return False, None
-    except Exception as e:
-        logger.error(f"Ошибка при запросе к {url}: {e}")
-        return False, None
-
+# ==================== Получение последнего тиража ====================
 def fetch_latest_draw():
-    """Перебирает API_URLS и возвращает данные первого успешного"""
-    for url in API_URLS:
-        success, data = try_api(url)
-        if success:
-            return data
-    logger.error("Ни один API не сработал")
-    return None
+    try:
+        logger.info(f"Запрос к API: {API_URL}")
+        resp = session.get(API_URL, timeout=10)
+        logger.info(f"Статус: {resp.status_code}")
+        logger.info(f"Content-Type: {resp.headers.get('Content-Type', 'не указан')}")
+        
+        if resp.status_code != 200:
+            logger.error(f"Ошибка API: {resp.status_code}")
+            return None
+        
+        data = resp.json()
+        # Ожидаем, что data - объект с полем draws
+        if isinstance(data, dict) and 'draws' in data:
+            draws = data['draws']
+            if draws and len(draws) > 0:
+                draw = draws[0]
+                draw_number = draw.get('drawNumber') or draw.get('number')
+                # Извлекаем числа из results
+                numbers = []
+                if 'results' in draw and len(draw['results']) > 0:
+                    numbers = draw['results'][0].get('numbers', [])
+                logger.info(f"✅ Получен тираж №{draw_number}, числа: {numbers}")
+                return {'drawNumber': draw_number, 'numbers': numbers}
+        elif isinstance(data, list) and len(data) > 0:
+            draw = data[0]
+            draw_number = draw.get('drawNumber') or draw.get('number')
+            numbers = []
+            if 'results' in draw and len(draw['results']) > 0:
+                numbers = draw['results'][0].get('numbers', [])
+            logger.info(f"✅ Получен тираж №{draw_number}, числа: {numbers}")
+            return {'drawNumber': draw_number, 'numbers': numbers}
+        else:
+            logger.warning(f"Неожиданная структура JSON: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+            return None
+    except Exception as e:
+        logger.error(f"Ошибка при запросе: {e}", exc_info=True)
+        return None
 
 def format_numbers_only(draw):
     numbers = draw.get('numbers', [])
