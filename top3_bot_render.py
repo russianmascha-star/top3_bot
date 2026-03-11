@@ -5,25 +5,24 @@ import time
 import threading
 import os
 import sys
+import re
 import logging
 from flask import Flask
 from telegram import Bot
 from telegram.constants import ParseMode
 import asyncio
+from bs4 import BeautifulSoup
 
 # ==================== НАСТРОЙКИ ====================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 CHECK_INTERVAL_SECONDS = 60
 
-# Ключ ScrapingBee (ваш)
+# Ключ ScrapingBee
 SCRAPINGBEE_API_KEY = "3KG51UIRHKF5U0SS73Z3TQ30EZQYYD3ISHPW0BC6VFJJTPT7D3CRTGUKXDGOG9WR99ZTVC4BKRXRUAFK"
 
-# Целевой API Столото
-TARGET_URL = "https://www.stoloto.ru/p/api/mobile/api/v35/service/draws/archive?game=top3&count=1&page=1"
-
-# Если хотите использовать прокси напрямую (без ScrapingBee), раскомментируйте и укажите
-# PROXY = "http://user:pass@ip:port"
+# Целевая страница (архив)
+TARGET_URL = "https://www.stoloto.ru/top3/archive"
 # ===================================================
 
 logging.basicConfig(
@@ -38,9 +37,6 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
 
 last_draw_number = None
 app = Flask(__name__)
-
-# Сессия (может не понадобиться для ScrapingBee, но оставим)
-session = requests.Session()
 
 # ==================== Telegram ====================
 async def send_telegram_message(text):
@@ -61,69 +57,83 @@ def send_telegram_sync(text):
     finally:
         loop.close()
 
-# ==================== Получение данных через ScrapingBee ====================
-def fetch_latest_draw():
+# ==================== Получение HTML через ScrapingBee с рендерингом JS ====================
+def fetch_html_via_scrapingbee():
     try:
-        # Формируем запрос к ScrapingBee
         scrapingbee_url = "https://app.scrapingbee.com/api/v1/"
         params = {
             'api_key': SCRAPINGBEE_API_KEY,
             'url': TARGET_URL,
-            'render_js': 'false',          # API не требует JS
-            'premium_proxy': 'true'         # использовать премиум прокси для обхода блокировок
+            'render_js': 'true',
+            'premium_proxy': 'true',
+            'country_code': 'ru',
         }
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 YaBrowser/24.10.0 Safari/537.36',
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'ru,en;q=0.9',
-            'Referer': 'https://www.stoloto.ru/top3/archive',
-            'Origin': 'https://www.stoloto.ru',
-            'Device-Platform': 'WEB_MOBILE_WINDOWS',
-            'Device-Type': 'MOBILE',
-            'Gosloto-Partner': 'bXMjXFRXZ3coWXh6R3s1NTdUX3dnWIBMLUxmdg',
-            'Gosloto-Token': '1e86f2a700-566331-41b406-b68f85-13836177b21027',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 YaBrowser/24.10.0 Safari/537.36'
         }
-        # Куки не передаём через заголовки, ScrapingBee сама их сохранит? Лучше передать как часть запроса?
-        # Можно добавить куки в параметр 'cookies' или в заголовок. Попробуем добавить в headers.
-        # В ScrapingBee можно передать заголовки через параметр 'headers' (JSON string)
-        # Для простоты пока без кук, возможно, они не нужны, если запрос идёт через прокси.
-        # Если без кук не работает, можно передать их в параметре 'cookies'.
-
-        logger.info(f"Запрос к ScrapingBee для URL: {TARGET_URL}")
+        logger.info(f"Запрос к ScrapingBee (с JS) для {TARGET_URL}")
         resp = requests.get(scrapingbee_url, params=params, headers=headers, timeout=30)
-        logger.info(f"Статус от ScrapingBee: {resp.status_code}")
-
+        logger.info(f"Статус ScrapingBee: {resp.status_code}")
         if resp.status_code != 200:
             logger.error(f"Ошибка ScrapingBee: {resp.status_code} - {resp.text[:200]}")
             return None
-
-        # Проверяем, что вернулось (может быть JSON или HTML)
-        content_type = resp.headers.get('Content-Type', '')
-        if 'application/json' in content_type:
-            data = resp.json()
-        else:
-            # Если вернулся HTML, попробуем найти JSON внутри (но вряд ли)
-            logger.warning("ScrapingBee вернул не JSON, пробуем распарсить как HTML?")
-            # Здесь можно добавить парсинг HTML, но пока просто вернём None
-            return None
-
-        # Парсим ответ (ожидаем ту же структуру, что и у прямого API)
-        if isinstance(data, dict) and 'draws' in data:
-            draws = data['draws']
-            if draws and len(draws) > 0:
-                draw = draws[0]
-                draw_number = draw.get('drawNumber') or draw.get('number')
-                numbers = []
-                if 'results' in draw and len(draw['results']) > 0:
-                    numbers = draw['results'][0].get('numbers', [])
-                logger.info(f"✅ Получен тираж №{draw_number}, числа: {numbers}")
-                return {'drawNumber': draw_number, 'numbers': numbers}
-        logger.warning(f"Неожиданная структура JSON: {data}")
-        return None
-
+        return resp.text
     except Exception as e:
-        logger.error(f"Ошибка при запросе через ScrapingBee: {e}", exc_info=True)
+        logger.error(f"Ошибка при запросе ScrapingBee: {e}")
         return None
+
+def parse_draw_from_html(html):
+    """Парсит HTML страницы архива и извлекает последний тираж"""
+    try:
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # Поиск контейнеров тиражей
+        draw_items = soup.find_all('div', class_='draws-item')
+        if not draw_items:
+            draw_items = soup.find_all('div', class_='result-item') or soup.find_all('tr', class_='draw-row')
+        
+        if not draw_items:
+            logger.warning("Не найдены элементы тиражей в HTML")
+            logger.debug(f"HTML (первые 5000): {html[:5000]}")
+            return None
+        
+        first = draw_items[0]
+        
+        # Номер тиража
+        number_elem = first.find('span', class_='draws-item__number') or first.find('span', class_='number')
+        if not number_elem:
+            logger.warning("Не найден номер тиража")
+            return None
+        number_text = number_elem.get_text(strip=True)
+        match = re.search(r'\d+', number_text)
+        if not match:
+            logger.warning(f"Не удалось извлечь номер из: {number_text}")
+            return None
+        draw_number = int(match.group())
+        
+        # Числа
+        ball_elems = first.find_all('span', class_='draws-item__number-ball') or first.find_all('span', class_='ball')
+        numbers = []
+        for ball in ball_elems[:3]:
+            text = ball.get_text(strip=True)
+            if text.isdigit():
+                numbers.append(int(text))
+        
+        if len(numbers) != 3:
+            logger.warning(f"Найдено только {len(numbers)} чисел: {numbers}")
+            return None
+        
+        logger.info(f"✅ Из HTML получен тираж №{draw_number}, числа: {numbers}")
+        return {'drawNumber': draw_number, 'numbers': numbers}
+    except Exception as e:
+        logger.error(f"Ошибка парсинга HTML: {e}")
+        return None
+
+def fetch_latest_draw():
+    html = fetch_html_via_scrapingbee()
+    if not html:
+        return None
+    return parse_draw_from_html(html)
 
 def format_numbers_only(draw):
     numbers = draw.get('numbers', [])
