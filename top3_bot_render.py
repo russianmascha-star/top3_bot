@@ -16,11 +16,11 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 CHECK_INTERVAL_SECONDS = 60
 
-# URL для получения JSON (тот, который мы нашли в браузере)
+# API Столото (тот, что работал в браузере)
 API_URL = "https://www.stoloto.ru/p/api/mobile/api/v35/service/draws/archive?game=top3&count=1&page=1"
 
-# Прокси (задаются через переменные окружения на Render)
-PROXY_URL = os.environ.get("PROXY_URL")  # например, socks5://user:pass@ip:port
+# Прокси (вставьте свои данные, уберите лишние символы)
+PROXY = "socks5://NYW9PY:AK5yG3pUe2av@bproxy.site:19063"  # Или http://NYW9PY:AK5yG3pUe2av@mproxy.site:19063
 # ===================================================
 
 logging.basicConfig(
@@ -36,7 +36,7 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
 last_draw_number = None
 app = Flask(__name__)
 
-# Заголовки из браузера (актуальны на момент теста)
+# Заголовки из браузера (актуальные)
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 YaBrowser/24.10.0 Safari/537.36',
     'Accept': '*/*',
@@ -45,7 +45,6 @@ HEADERS = {
     'Content-Type': 'application/x-www-form-urlencoded',
     'Origin': 'https://www.stoloto.ru',
     'Referer': 'https://www.stoloto.ru/top3/archive',
-    'Connection': 'keep-alive',
     'Device-Platform': 'WEB_MOBILE_WINDOWS',
     'Device-Type': 'MOBILE',
     'Gosloto-Partner': 'bXMjXFRXZ3coWXh6R3s1NTdUX3dnWIBMLUxmdg',
@@ -85,14 +84,12 @@ def fetch_latest_draw():
         session = requests.Session()
         session.headers.update(HEADERS)
         
-        if PROXY_URL:
-            session.proxies = {
-                'http': PROXY_URL,
-                'https': PROXY_URL
-            }
-            logger.info(f"✅ Использую прокси: {PROXY_URL.split('@')[-1] if '@' in PROXY_URL else PROXY_URL}")
-        else:
-            logger.warning("⚠️ Прокси не задан. Запрос будет прямым (скорее всего, 403).")
+        # Настройка прокси (прямо в коде)
+        session.proxies = {
+            'http': PROXY,
+            'https': PROXY
+        }
+        logger.info(f"✅ Использую прокси: {PROXY.split('@')[-1]}")
 
         logger.info(f"Запрос к API: {API_URL}")
         resp = session.get(API_URL, timeout=30)
